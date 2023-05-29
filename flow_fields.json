@@ -1,0 +1,82 @@
+[   
+    {"data": {
+        "type": "field",
+        "name": "Address",
+        "slug": "address",
+        "field_type": "string",
+        "description": "Адрес",
+        "required": true,
+        "enabled": true,
+        "order": 1,
+        "omit_null": false,
+        "relationships": {
+            "flow": {
+                "data": {
+                    "type": "flow",
+                    "id": "flow_id"
+                }
+            }
+        }
+        }
+    },
+    {"data": {
+        "type": "field",
+        "name": "Alias",
+        "slug": "alias",
+        "field_type": "string",
+        "description": "Сокращенный адрес",
+        "required": false,
+        "enabled": true,
+        "order": 2,
+        "omit_null": false,
+        "relationships": {
+            "flow": {
+                "data": {
+                    "type": "flow",
+                    "id": "flow_id"
+                }
+            }
+        }
+        }
+    },
+    {"data": {
+        "type": "field",
+        "name": "Latitude",
+        "slug": "latitude",
+        "field_type": "float",
+        "description": "Широта",
+        "required": true,
+        "enabled": true,
+        "order": 3,
+        "omit_null": false,
+        "relationships": {
+            "flow": {
+                "data": {
+                    "type": "flow",
+                    "id": "flow_id"
+                }
+            }
+        }
+        }
+    },
+    {"data": {
+        "type": "field",
+        "name": "Longitude",
+        "slug": "longitude",
+        "field_type": "float",
+        "description": "Долгота",
+        "required": true,
+        "enabled": true,
+        "order": 4,
+        "omit_null": false,
+        "relationships": {
+            "flow": {
+                "data": {
+                    "type": "flow",
+                    "id": "flow_id"
+                }
+            }
+        }
+        }
+    }
+]
