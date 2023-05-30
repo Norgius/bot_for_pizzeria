@@ -215,3 +215,11 @@ def create_entries_for_flow(store_access_token: str, address: dict):
     }
     response = requests.post(url, headers=headers, json=json_data)
     response.raise_for_status()
+
+
+def get_pizzeria_list(store_access_token: str):
+    url = 'https://api.moltin.com/v2/flows/pizzeria/entries?page[limit]=200'
+    headers = {'Authorization': f'Bearer {store_access_token}'}
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return response.json()

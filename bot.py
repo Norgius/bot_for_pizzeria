@@ -4,6 +4,7 @@ from textwrap import dedent
 from functools import partial
 
 import requests
+from geopy import distance
 from validate_email import validate_email
 from environs import Env
 from telegram import ParseMode
@@ -14,9 +15,28 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler
 from database import get_database_connection
 from moltin_api import (get_access_token, get_products, get_product_image,
                         put_product_in_cart, get_user_cart, create_customer,
-                        delete_cart_product, delete_all_cart_products)
+                        delete_cart_product, delete_all_cart_products,
+                        get_pizzeria_list)
 
 logger = logging.getLogger(__name__)
+
+
+def fetch_coordinates(apikey, address):
+    base_url = "https://geocode-maps.yandex.ru/1.x"
+    response = requests.get(base_url, params={
+        "geocode": address,
+        "apikey": apikey,
+        "format": "json",
+    })
+    response.raise_for_status()
+    found_places = response.json()['response']['GeoObjectCollection']['featureMember']
+
+    if not found_places:
+        return None
+
+    most_relevant = found_places[0]
+    lon, lat = most_relevant['GeoObject']['Point']['pos'].split(" ")
+    return float(lat), float(lon)
 
 
 def parse_products(raw_products: list) -> dict:
@@ -285,10 +305,10 @@ def handle_cart(update: Update, context: CallbackContext) -> str:
                            message_id=query.message.message_id)
         return 'HANDLE_MENU'
     else:
-        message = 'Пришлите, пожалуйста, ваш <b>email</b>'
+        message = 'Пришлите, пожалуйста, ваш адрес текстом или геолокацию'
         bot.send_message(text=message, chat_id=query.message.chat_id,
                          parse_mode=ParseMode.HTML)
-        return 'WAITING_EMAIL'
+        return 'HANDLE_WAITING'
 
 
 def waiting_email(update: Update, context: CallbackContext) -> str:
@@ -354,9 +374,60 @@ def waiting_email(update: Update, context: CallbackContext) -> str:
         return 'WAITING_EMAIL'
 
 
+def handle_waiting(update: Update, context: CallbackContext) -> str:
+    store_access_token = context.bot_data['store_access_token']
+    try:
+        current_pos = (update.message.location.latitude,
+                       update.message.location.longitude)
+    except AttributeError:
+        address = update.message.text
+        geocoder_api = context.bot_data['geocoder_api']
+        current_pos = fetch_coordinates(geocoder_api, address)
+    if not current_pos:
+        message = 'Не могу распознать этот адрес'
+        update.message.reply_text(text=message)
+        return 'HANDLE_WAITING'
+    raw_addresses = get_pizzeria_list(store_access_token)
+    path_to_pizzerias = {}
+    for raw_address in raw_addresses['data']:
+        pizzeria_coord = (raw_address['latitude'], raw_address['longitude'])
+        path_to_pizzeria = distance.distance(pizzeria_coord, current_pos).km
+
+        path_to_pizzerias[path_to_pizzeria] = raw_address['address']
+    nearest_pizzeria = min(path_to_pizzerias.items(), key=lambda x: x[0])
+    if nearest_pizzeria[0] <= 0.500:
+        message = dedent(f'''
+        Пиццерия неподалеку, всего в <b>{(nearest_pizzeria[0] * 1000):.2f} метрах</b> от вас.
+        Её адрес: <b>{nearest_pizzeria[1]}.</b>
+
+        Также можем доставить её бесплатно)
+        ''')
+    elif 0.500 < nearest_pizzeria[0] <= 5:
+        message = dedent(f'''
+        Похоже придется ехать до вас на самокате.
+        Доставка будет стоить <b>100 рублей.</b>
+        Доставляем или самовывоз?
+
+        Адрес пиццерии: <b>{nearest_pizzeria[1]}.</b>
+        ''')
+    elif 5 < nearest_pizzeria[0] <= 20:
+        message = dedent('''
+        Доставка пиццы вам обойдетс в <b>300 рублей.</b>
+        Спасибо за доверие)
+        ''')
+    else:
+        message = dedent(f'''
+        К сожалению так далеко мы пиццу не доставляем.
+        Ближайшая пиццерия аж в <b>{nearest_pizzeria[0]:.0f} км</b> от вас.
+        ''')
+    update.message.reply_text(text=message, parse_mode=ParseMode.HTML)
+    return 'HANDLE_WAITING'
+
+
 def handle_users_reply(update: Update, context: CallbackContext,
                        client_secret: str, client_id: str,
-                       token_lifetime: int, products_per_page: int) -> None:
+                       token_lifetime: int, products_per_page: int,
+                       geocoder_api: str) -> None:
     try:
         store_access_token = _database.get('store_access_token')
         if not store_access_token:
@@ -365,6 +436,7 @@ def handle_users_reply(update: Update, context: CallbackContext,
                             store_access_token)
         else:
             store_access_token = store_access_token.decode('utf-8')
+        context.bot_data['geocoder_api'] = geocoder_api
         context.bot_data['products_per_page'] = products_per_page
         context.bot_data['store_access_token'] = store_access_token
     except requests.exceptions.HTTPError as err:
@@ -389,6 +461,7 @@ def handle_users_reply(update: Update, context: CallbackContext,
         'HANDLE_DESCRIPTION': handle_description,
         'HANDLE_CART': handle_cart,
         'WAITING_EMAIL': waiting_email,
+        'HANDLE_WAITING': handle_waiting,
     }
     state_handler = states_functions[user_state]
     try:
@@ -396,8 +469,8 @@ def handle_users_reply(update: Update, context: CallbackContext,
         _database.set(chat_id, next_state)
     except requests.exceptions.HTTPError as err:
         logger.warning(f'Ошибка в работе api.moltin.com\n{err}\n')
-    except Exception as err:
-        logger.warning(f'Ошибка в работе телеграм бота\n{err}\n')
+    # except Exception as err:
+    #     logger.warning(f'Ошибка в работе телеграм бота\n{err}\n')
 
 
 def main():
@@ -410,6 +483,7 @@ def main():
     database_password = env.str("REDIS_PASSWORD")
     database_host = env.str("REDIS_HOST")
     database_port = env.int("REDIS_PORT")
+    geocoder_api = env.str('YANDEX_GEOCODER_APIKEY')
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
@@ -424,19 +498,29 @@ def main():
     dispatcher.add_handler(CallbackQueryHandler(
         partial(handle_users_reply, client_secret=client_secret,
                 client_id=client_id, token_lifetime=token_lifetime,
-                products_per_page=products_per_page))
+                products_per_page=products_per_page,
+                geocoder_api=geocoder_api))
                            )
     dispatcher.add_handler(MessageHandler(
         Filters.text,
         partial(handle_users_reply, client_secret=client_secret,
                 client_id=client_id, token_lifetime=token_lifetime,
-                products_per_page=products_per_page))
+                products_per_page=products_per_page,
+                geocoder_api=geocoder_api))
+                           )
+    dispatcher.add_handler(MessageHandler(
+        Filters.location,
+        partial(handle_users_reply, client_secret=client_secret,
+                client_id=client_id, token_lifetime=token_lifetime,
+                products_per_page=products_per_page,
+                geocoder_api=geocoder_api))
                            )
     dispatcher.add_handler(CommandHandler(
         'start',
         partial(handle_users_reply, client_secret=client_secret,
                 client_id=client_id, token_lifetime=token_lifetime,
-                products_per_page=products_per_page))
+                products_per_page=products_per_page,
+                geocoder_api=geocoder_api))
                            )
     logger.info('Телеграм бот запущен')
     updater.start_polling()
