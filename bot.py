@@ -2,6 +2,7 @@ import logging
 from math import ceil
 from textwrap import dedent
 from functools import partial
+from pprint import pprint
 
 import requests
 from geopy import distance
@@ -9,14 +10,15 @@ from validate_email import validate_email
 from environs import Env
 from telegram import ParseMode
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Filters, Updater, CallbackContext
+from telegram.ext import Filters, Updater, CallbackContext, JobQueue
 from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler
 
 from database import get_database_connection
 from moltin_api import (get_access_token, get_products, get_product_image,
                         put_product_in_cart, get_user_cart, create_customer,
                         delete_cart_product, delete_all_cart_products,
-                        get_pizzeria_list)
+                        get_pizzeria_list, create_entries_for_flow,
+                        get_entry_from_flow)
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +95,7 @@ def get_product_quantity_in_cart(product_id, user_cart):
     return 0
 
 
-def prepare_cart_buttons_and_message(user_cart):
+def prepare_cart_buttons_and_message(user_cart, chat_id):
     products = user_cart.get('data')
     message = ''
     keyboard = []
@@ -121,6 +123,7 @@ def prepare_cart_buttons_and_message(user_cart):
             .get('without_tax').get('formatted')
         message += dedent(f'''
         <b>Общая стоимость:</b> <u>{cart_total_cost}</u>''')
+        _database.set(f'{chat_id}_menu', message)
     else:
         message = 'Ваша корзина пуста'
 
@@ -198,7 +201,8 @@ def handle_menu(update: Update, context: CallbackContext) -> str:
         return 'HANDLE_MENU'
     user_cart = get_user_cart(store_access_token, chat_id)
     if user_reply == 'Корзина':
-        message, reply_markup = prepare_cart_buttons_and_message(user_cart)
+        message, reply_markup = prepare_cart_buttons_and_message(user_cart,
+                                                                 chat_id)
         bot.send_message(chat_id=chat_id, text=message,
                          reply_markup=reply_markup, parse_mode=ParseMode.HTML)
         bot.delete_message(chat_id=chat_id,
@@ -252,7 +256,8 @@ def handle_description(update: Update, context: CallbackContext) -> str:
         return 'HANDLE_DESCRIPTION'
     elif user_reply == 'Корзина':
         user_cart = get_user_cart(store_access_token, chat_id)
-        message, reply_markup = prepare_cart_buttons_and_message(user_cart)
+        message, reply_markup = prepare_cart_buttons_and_message(user_cart,
+                                                                 chat_id)
         bot.send_message(chat_id=chat_id, text=message,
                          reply_markup=reply_markup, parse_mode=ParseMode.HTML)
         bot.delete_message(chat_id=chat_id,
@@ -285,7 +290,8 @@ def handle_cart(update: Update, context: CallbackContext) -> str:
         product_id = user_reply[4::]
         delete_cart_product(store_access_token, chat_id, product_id)
         user_cart = get_user_cart(store_access_token, chat_id)
-        message, reply_markup = prepare_cart_buttons_and_message(user_cart)
+        message, reply_markup = prepare_cart_buttons_and_message(user_cart,
+                                                                 chat_id)
         bot.send_message(chat_id=chat_id, text=message,
                          reply_markup=reply_markup, parse_mode=ParseMode.HTML)
         bot.delete_message(chat_id=chat_id,
@@ -311,71 +317,9 @@ def handle_cart(update: Update, context: CallbackContext) -> str:
         return 'HANDLE_WAITING'
 
 
-def waiting_email(update: Update, context: CallbackContext) -> str:
-    bot = context.bot
-    query = update.callback_query
-    if query and query.data == 'Неверно':
-        message = 'Пришлите, пожалуйста, ваш <b>email</b>'
-        bot.send_message(text=message, chat_id=query.message.chat_id,
-                         parse_mode=ParseMode.HTML)
-        bot.delete_message(chat_id=query.message.chat_id,
-                           message_id=query.message.message_id)
-        return 'WAITING_EMAIL'
-    elif query and query.data == 'Верно':
-        store_access_token = context.bot_data['store_access_token']
-        chat_id = query.message.chat_id
-        customer_email = _database.get(f'email_{chat_id}').decode()
-        if not validate_email(customer_email):
-            text = dedent(f'''
-            Данный <b>email: {customer_email}</b> не является настоящим.
-            Пожалуйста, введите актуальную почту
-            ''')
-            bot.send_message(text=text, chat_id=chat_id,
-                             parse_mode=ParseMode.HTML)
-            bot.delete_message(chat_id=chat_id,
-                               message_id=query.message.message_id)
-            return 'WAITING_EMAIL'
-        bot.send_message(text='Ожидайте уведомление на почте', chat_id=chat_id)
-        bot.delete_message(chat_id=chat_id,
-                           message_id=query.message.message_id)
-        if not _database.get(f'customer_{chat_id}'):
-            first_name = name if (name := query.from_user.first_name) else ''
-            last_name = name if (name := query.from_user.last_name) else ''
-            customer_name = (first_name + ' ' + last_name).strip()
-            store_access_token = context.bot_data['store_access_token']
-            customer_id = create_customer(store_access_token, customer_name,
-                                          customer_email)
-            _database.set(f'customer_{chat_id}', customer_id)
-        delete_all_cart_products(store_access_token, chat_id)
-
-        raw_products = get_products(store_access_token)
-        products = parse_products(raw_products)
-        products_per_page = context.bot_data['products_per_page']
-        pages_number = ceil(len(products) / products_per_page)
-        keyboard = get_menu_buttons(products, products_per_page, pages_number)
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        bot.send_message(text='Пожалуйста, выберите товар!', chat_id=chat_id,
-                         reply_markup=reply_markup)
-        return 'HANDLE_MENU'
-    else:
-        email = update.message.text
-        message = dedent(f'''
-        Вы прислали мне эту почту: <b>{email}</b>
-        Всё верно?
-        ''')
-        chat_id = update.effective_chat.id
-        _database.set(f'email_{chat_id}', email)
-        keyboard = [[InlineKeyboardButton('Верно', callback_data='Верно')],
-                    [InlineKeyboardButton('Неверно', callback_data='Неверно')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        update.message.reply_text(text=message, reply_markup=reply_markup,
-                                  parse_mode=ParseMode.HTML)
-        return 'WAITING_EMAIL'
-
-
 def handle_waiting(update: Update, context: CallbackContext) -> str:
     store_access_token = context.bot_data['store_access_token']
+    chat_id = update.effective_chat.id
     try:
         current_pos = (update.message.location.latitude,
                        update.message.location.longitude)
@@ -387,18 +331,28 @@ def handle_waiting(update: Update, context: CallbackContext) -> str:
         message = 'Не могу распознать этот адрес'
         update.message.reply_text(text=message)
         return 'HANDLE_WAITING'
+
+    customer_address_id = create_entries_for_flow(store_access_token,
+                                                  current_pos,
+                                                  flow='customer_address')
     raw_addresses = get_pizzeria_list(store_access_token)
     path_to_pizzerias = {}
     for raw_address in raw_addresses['data']:
         pizzeria_coord = (raw_address['latitude'], raw_address['longitude'])
         path_to_pizzeria = distance.distance(pizzeria_coord, current_pos).km
 
-        path_to_pizzerias[path_to_pizzeria] = raw_address['address']
+        path_to_pizzerias[path_to_pizzeria] = (raw_address['address'],
+                                               raw_address['id'])
     nearest_pizzeria = min(path_to_pizzerias.items(), key=lambda x: x[0])
+    _database.set(f'{chat_id}_order',
+                  f'{customer_address_id}${nearest_pizzeria[1][1]}')
+
+    keyboard = [[InlineKeyboardButton('Доставка', callback_data='Доставка')],
+                [InlineKeyboardButton('Самовывоз', callback_data='Самовывоз')]]
     if nearest_pizzeria[0] <= 0.500:
         message = dedent(f'''
-        Пиццерия неподалеку, всего в <b>{(nearest_pizzeria[0] * 1000):.2f} метрах</b> от вас.
-        Её адрес: <b>{nearest_pizzeria[1]}.</b>
+        Пиццерия неподалеку, всего в <b>{(nearest_pizzeria[0] * 1000):.0f} метрах</b> от вас.
+        Её адрес: <b>{nearest_pizzeria[1][0]}.</b>
 
         Также можем доставить её бесплатно)
         ''')
@@ -408,20 +362,74 @@ def handle_waiting(update: Update, context: CallbackContext) -> str:
         Доставка будет стоить <b>100 рублей.</b>
         Доставляем или самовывоз?
 
-        Адрес пиццерии: <b>{nearest_pizzeria[1]}.</b>
+        Адрес пиццерии: <b>{nearest_pizzeria[1][0]}.</b>
         ''')
     elif 5 < nearest_pizzeria[0] <= 20:
-        message = dedent('''
-        Доставка пиццы вам обойдетс в <b>300 рублей.</b>
-        Спасибо за доверие)
-        ''')
+        message = 'Доставка пиццы обойдется вам в <b>300 рублей.</b>'
     else:
         message = dedent(f'''
         К сожалению так далеко мы пиццу не доставляем.
-        Ближайшая пиццерия аж в <b>{nearest_pizzeria[0]:.0f} км</b> от вас.
+        Ближайшая пиццерия аж в <b>{nearest_pizzeria[0]:.1f} км</b> от вас.
         ''')
-    update.message.reply_text(text=message, parse_mode=ParseMode.HTML)
-    return 'HANDLE_WAITING'
+        _ = keyboard.pop(0)
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text(text=message, parse_mode=ParseMode.HTML,
+                              reply_markup=reply_markup)
+    return 'HANDLE_DELIVERY'
+
+
+def remind_about_order(context: CallbackContext) -> str:
+    chat_id = context.job.context
+    message = dedent('''
+    Приятного аппетита! *место для рекламы*
+
+    *сообщение что делать если пицца не пришла*
+    ''')
+    context.bot.send_message(chat_id=chat_id, text=message)
+
+
+def handle_delivery(update: Update, context: CallbackContext):
+    store_access_token = context.bot_data['store_access_token']
+    bot = context.bot
+    query = update.callback_query
+    chat_id = query.message.chat_id
+    entry_id = _database.get(f'{chat_id}_order').decode('utf-8')
+    customer_address_id, pizzeria_id = entry_id.split('$')
+
+    raw_entry = get_entry_from_flow(store_access_token, 'pizzeria',
+                                    pizzeria_id)
+    deliveryman_id = raw_entry['data']['deliveryman_id']
+    pizzeria_coords = (raw_entry['data']['latitude'],
+                       raw_entry['data']['longitude'])
+    pizzeria_address = raw_entry['data']['address']
+
+    if query.data == 'Доставка':
+        raw_entry = get_entry_from_flow(store_access_token,
+                                        'customer_address',
+                                        customer_address_id)
+        coords = (raw_entry['data']['latitude'],
+                  raw_entry['data']['longitude'])
+        message = _database.get(f'{chat_id}_menu').decode('utf-8')
+        bot.send_message(deliveryman_id, text=message,
+                         parse_mode=ParseMode.HTML)
+        bot.send_location(deliveryman_id, latitude=coords[0],
+                          longitude=coords[1], protect_content=True)
+        context.job_queue.run_once(remind_about_order, 3600, context=chat_id)
+    elif query.data == 'Самовывоз':
+        bot.send_message(
+            chat_id, text=f'Будем ждать вас по адресу: {pizzeria_address}')
+        bot.send_location(chat_id, latitude=pizzeria_coords[0],
+                          longitude=pizzeria_coords[1])
+
+    products_per_page = context.bot_data['products_per_page']
+    raw_products = get_products(store_access_token)
+    products = parse_products(raw_products)
+    pages_number = ceil(len(products) / products_per_page)
+    keyboard = get_menu_buttons(products, products_per_page, pages_number)
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = 'Можете побаловать себя ещё одной вкусной пиццей.'
+    bot.send_message(text=text, chat_id=chat_id, reply_markup=reply_markup)
+    return 'HANDLE_MENU'
 
 
 def handle_users_reply(update: Update, context: CallbackContext,
@@ -462,6 +470,7 @@ def handle_users_reply(update: Update, context: CallbackContext,
         'HANDLE_CART': handle_cart,
         'WAITING_EMAIL': waiting_email,
         'HANDLE_WAITING': handle_waiting,
+        'HANDLE_DELIVERY': handle_delivery,
     }
     state_handler = states_functions[user_state]
     try:

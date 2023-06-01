@@ -201,24 +201,44 @@ def create_field(store_access_token: str, json_data: dict, flow_id: str):
     response.raise_for_status()
 
 
-def create_entries_for_flow(store_access_token: str, address: dict):
-    url = 'https://api.moltin.com/v2/flows/pizzeria/entries'
+def create_entries_for_flow(store_access_token: str,
+                            data: dict | tuple,
+                            flow: str = 'pizzeria'):
+    url = f'https://api.moltin.com/v2/flows/{flow}/entries'
     headers = {'Authorization': f'Bearer {store_access_token}'}
-    json_data = {
-        'data': {
-            'type': 'entry',
-            'address': address['address']['full'],
-            'alias': address['alias'],
-            'latitude': float(address['coordinates']['lat']),
-            'longitude': float(address['coordinates']['lon']),
-        },
-    }
+    if isinstance(data, dict):
+        json_data = {
+            'data': {
+                'type': 'entry',
+                'address': data['address']['full'],
+                'alias': data['alias'],
+                'latitude': float(data['coordinates']['lat']),
+                'longitude': float(data['coordinates']['lon']),
+            },
+        }
+    else:
+        json_data = {
+            'data': {
+                'type': 'entry',
+                'latitude': float(data[0]),
+                'longitude': float(data[1]),
+            },
+        }
     response = requests.post(url, headers=headers, json=json_data)
     response.raise_for_status()
+    return response.json()['data']['id']
 
 
 def get_pizzeria_list(store_access_token: str):
     url = 'https://api.moltin.com/v2/flows/pizzeria/entries?page[limit]=200'
+    headers = {'Authorization': f'Bearer {store_access_token}'}
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return response.json()
+
+
+def get_entry_from_flow(store_access_token: str, flow: str, entry_id: str):
+    url = f'https://api.moltin.com/v2/flows/{flow}/entries/{entry_id}'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     response = requests.get(url, headers=headers)
     response.raise_for_status()
