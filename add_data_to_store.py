@@ -1,6 +1,6 @@
-from pprint import pprint
 import json
 import argparse
+import logging
 
 from environs import Env
 import requests
@@ -11,23 +11,7 @@ from moltin_api import (get_access_token, set_price_for_product,
                         upload_image, create_image_relationship, create_flow,
                         create_field, create_entries_for_flow)
 
-
-def parse_products(raw_products: list, inventories: list) -> dict:
-    products = {}
-    for raw_product in raw_products:
-        attributes = raw_product.get('attributes')
-        product = {
-            'name': attributes.get('name'),
-            'description': attributes.get('description'),
-            'price': attributes.get('price').get('USD').get('amount') / 100,
-            'image_id': raw_product.get('relationships')
-            .get('main_image').get('data').get('id')
-            }
-        products[raw_product.get('id')] = product
-    for inventory in inventories:
-        products.get(inventory.get('id'))['stock'] = inventory.get('available')
-    pprint(products)
-    return products
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -56,6 +40,11 @@ def main():
     parser.add_argument('--address', action=argparse.BooleanOptionalAction,
                         help='Аргумент для добавления адресов пиццерий')
     args = parser.parse_args()
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    logger.setLevel(logging.INFO)
     _database = get_database_connection(database_password, database_host,
                                         database_port)
     store_access_token = _database.get('store_access_token')
@@ -65,49 +54,28 @@ def main():
                         store_access_token)
     else:
         store_access_token = store_access_token.decode('utf-8')
-
-    if args.price_book:
-        try:
+    try:
+        if args.price_book:
             create_corrency(store_access_token)
             price_book_id = create_price_book(store_access_token)
             print('price_book_id:', price_book_id)
-        except requests.exceptions.HTTPError as error:
-            print(error)
-        finally:
-            exit(0)
-
-    if args.flow:
-        try:
+        elif args.flow:
             flow_id = create_flow(store_access_token)
             print('flow_id:', flow_id)
-        except requests.exceptions.HTTPError as error:
-            print(error)
-        finally:
-            exit(0)
-
-    if args.field_for_flow:
-        try:
+        elif args.field_for_flow:
             with open(args.field_for_flow, 'r') as file:
                 field_for_flow = json.load(file)
             for field in field_for_flow:
                 create_field(store_access_token, field, flow_id)
             print('Поля для Flow созданы')
-        except FileNotFoundError as error:
-            print(error)
-
-    if args.address:
-        try:
+        elif args.address:
             url = 'https://dvmn.org/media/filer_public/90/90/9090ecbf-249f-42c7-8635-a96985268b88/addresses.json'
             response = requests.get(url)
             response.raise_for_status()
             for address in response.json():
                 create_entries_for_flow(store_access_token, address)
             print('Все адреса были добавлены, проверьте Flow')
-        except requests.exceptions.HTTPError as error:
-            print(error)
-
-    if args.menu:
-        try:
+        elif args.menu:
             url = 'https://dvmn.org/media/filer_public/a2/5a/a25a7cbd-541c-4caf-9bf9-70dcdf4a592e/menu.json'
             response = requests.get(url)
             response.raise_for_status()
@@ -121,11 +89,14 @@ def main():
                 create_image_relationship(store_access_token, image_id,
                                           product_id)
                 print(product['name'], 'загружен')
-        except requests.exceptions.HTTPError as error:
-            print(error)
-
-    # raw_products, inventories = get_products(store_access_token)
-    # products = parse_products(raw_products, inventories)
+        else:
+            print('Вы не указали аргумент')
+    except FileNotFoundError as error:
+        logger.warning(error)
+    except requests.exceptions.HTTPError as error:
+        logger.warning(error)
+    finally:
+        exit(0)
 
 
 if __name__ == '__main__':
