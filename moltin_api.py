@@ -79,7 +79,7 @@ def create_customer(store_access_token: str, customer_name: str,
     return customer_id
 
 
-def create_product(store_access_token: str, product_data: dict):
+def create_product(store_access_token: str, product_data: dict) -> tuple[str, str]:
     url = 'https://api.moltin.com/pcm/products'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     json_data = {
@@ -101,7 +101,7 @@ def create_product(store_access_token: str, product_data: dict):
     return product_id, product_sku
 
 
-def create_corrency(store_access_token: str):
+def create_corrency(store_access_token: str) -> None:
     url = 'https://api.moltin.com/v2/currencies'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     json_data = {
@@ -119,7 +119,7 @@ def create_corrency(store_access_token: str):
     response.raise_for_status()
 
 
-def create_price_book(store_access_token: str):
+def create_price_book(store_access_token: str) -> str:
     url = 'https://api.moltin.com/pcm/pricebooks'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     json_data = {
@@ -134,7 +134,7 @@ def create_price_book(store_access_token: str):
 
 
 def set_price_for_product(store_access_token: str, price_book_id: str,
-                          product_sku: str, product_price: int):
+                          product_sku: str, product_price: int) -> None:
     url = f'https://api.moltin.com/pcm/pricebooks/{price_book_id}/prices'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     json_data = {
@@ -153,7 +153,7 @@ def set_price_for_product(store_access_token: str, price_book_id: str,
     response.raise_for_status()
 
 
-def upload_image(store_access_token: str, image_url: str):
+def upload_image(store_access_token: str, image_url: str) -> None:
     url = 'https://api.moltin.com/v2/files'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     files = {
@@ -165,7 +165,7 @@ def upload_image(store_access_token: str, image_url: str):
 
 
 def create_image_relationship(store_access_token: str, image_id: str,
-                              product_id: str):
+                              product_id: str) -> None:
     url = f'https://api.moltin.com/pcm/products/{product_id}/relationships/main_image'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     json_data = {
@@ -176,7 +176,7 @@ def create_image_relationship(store_access_token: str, image_id: str,
     response.raise_for_status()
 
 
-def create_flow(store_access_token: str):
+def create_flow(store_access_token: str) -> str:
     url = 'https://api.moltin.com/v2/flows'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     json_data = {
@@ -193,7 +193,7 @@ def create_flow(store_access_token: str):
     return response.json()['data']['id']
 
 
-def create_field(store_access_token: str, json_data: dict, flow_id: str):
+def create_field(store_access_token: str, json_data: dict, flow_id: str) -> None:
     url = 'https://api.moltin.com/v2/fields'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     json_data['data']['relationships']['flow']['data']['id'] = flow_id
@@ -203,7 +203,7 @@ def create_field(store_access_token: str, json_data: dict, flow_id: str):
 
 def create_entries_for_flow(store_access_token: str,
                             data: dict | tuple,
-                            flow: str = 'pizzeria'):
+                            flow: str = 'pizzeria') -> None:
     url = f'https://api.moltin.com/v2/flows/{flow}/entries'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     if isinstance(data, dict):
@@ -229,7 +229,7 @@ def create_entries_for_flow(store_access_token: str,
     return response.json()['data']['id']
 
 
-def get_pizzeria_list(store_access_token: str):
+def get_pizzeria_list(store_access_token: str) -> dict:
     url = 'https://api.moltin.com/v2/flows/pizzeria/entries?page[limit]=200'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     response = requests.get(url, headers=headers)
@@ -237,7 +237,7 @@ def get_pizzeria_list(store_access_token: str):
     return response.json()
 
 
-def get_entry_from_flow(store_access_token: str, flow: str, entry_id: str):
+def get_entry_from_flow(store_access_token: str, flow: str, entry_id: str) -> dict:
     url = f'https://api.moltin.com/v2/flows/{flow}/entries/{entry_id}'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     response = requests.get(url, headers=headers)
