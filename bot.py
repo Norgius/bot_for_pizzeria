@@ -1,24 +1,22 @@
 import logging
 from math import ceil
 from textwrap import dedent
-from functools import partial
-from pprint import pprint
 
 import requests
 from geopy import distance
-from validate_email import validate_email
 from environs import Env
-from telegram import ParseMode
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Filters, Updater, CallbackContext, JobQueue
-from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler
+from telegram import (ParseMode, LabeledPrice, Update,
+                      InlineKeyboardButton, InlineKeyboardMarkup)
+from telegram.ext import (Filters, Updater, CallbackContext, CommandHandler,
+                          CallbackQueryHandler, MessageHandler,
+                          PreCheckoutQueryHandler)
 
 from database import get_database_connection
 from moltin_api import (get_access_token, get_products, get_product_image,
-                        put_product_in_cart, get_user_cart, create_customer,
-                        delete_cart_product, delete_all_cart_products,
+                        put_product_in_cart, get_user_cart,
+                        delete_cart_product, get_entry_from_flow,
                         get_pizzeria_list, create_entries_for_flow,
-                        get_entry_from_flow)
+                        delete_all_cart_products)
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +84,7 @@ def get_menu_buttons(products: dict, products_per_page: int,
     return keyboard
 
 
-def get_product_quantity_in_cart(product_id, user_cart):
+def get_product_quantity_in_cart(product_id, user_cart) -> int:
     products = user_cart.get('data')
     if products:
         for product in products:
@@ -95,7 +93,8 @@ def get_product_quantity_in_cart(product_id, user_cart):
     return 0
 
 
-def prepare_cart_buttons_and_message(user_cart, chat_id):
+def prepare_cart_buttons_and_message(
+        user_cart: dict, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
     products = user_cart.get('data')
     message = ''
     keyboard = []
@@ -120,23 +119,25 @@ def prepare_cart_buttons_and_message(user_cart, chat_id):
                       ]
             keyboard.append(button)
         cart_total_cost = user_cart.get('meta').get('display_price')\
-            .get('without_tax').get('formatted')
+            .get('without_tax').get('amount')
         message += dedent(f'''
-        <b>Общая стоимость:</b> <u>{cart_total_cost}</u>''')
-        _database.set(f'{chat_id}_menu', message)
+        <b>Общая стоимость:</b> <u>{cart_total_cost/100:.2f} РУБ</u>''')
+        _database.json().set(f'{chat_id}_menu', '$',
+                             {'menu': message, 'price': cart_total_cost/100})
     else:
         message = 'Ваша корзина пуста'
 
     keyboard.append([InlineKeyboardButton('В меню', callback_data='В меню')])
     if len(keyboard) > 1:
         keyboard.append(
-            [InlineKeyboardButton('Оплатить', callback_data='Оплатить')]
+            [InlineKeyboardButton('Оплата', callback_data='Оплата')]
         )
     reply_markup = InlineKeyboardMarkup(keyboard)
     return message, reply_markup
 
 
-def prepare_description_buttons_and_message(product_data, product_quantity):
+def prepare_description_buttons_and_message(
+        product_data: dict, product_quantity: int) -> tuple[str, InlineKeyboardMarkup]:
     payment = product_quantity * product_data.get('price')
     message = dedent(f'''
     <b>{product_data.get('name')}</b>
@@ -388,20 +389,27 @@ def remind_about_order(context: CallbackContext) -> str:
     context.bot.send_message(chat_id=chat_id, text=message)
 
 
-def handle_delivery(update: Update, context: CallbackContext):
+def handle_delivery(update: Update, context: CallbackContext) -> str:
     store_access_token = context.bot_data['store_access_token']
     bot = context.bot
     query = update.callback_query
     chat_id = query.message.chat_id
-    entry_id = _database.get(f'{chat_id}_order').decode('utf-8')
-    customer_address_id, pizzeria_id = entry_id.split('$')
+    if query.data == 'payment':
+        pay_for_pizza(update, context)
+        context.job_queue.run_once(remind_about_order, 3600, context=chat_id)
+        delete_all_cart_products(store_access_token, chat_id)
+        return 'START'
 
+    entry_ids = _database.get(f'{chat_id}_order').decode('utf-8')
+    customer_address_id, pizzeria_id = entry_ids.split('$')
     raw_entry = get_entry_from_flow(store_access_token, 'pizzeria',
                                     pizzeria_id)
     deliveryman_id = raw_entry['data']['deliveryman_id']
     pizzeria_coords = (raw_entry['data']['latitude'],
                        raw_entry['data']['longitude'])
     pizzeria_address = raw_entry['data']['address']
+    keyboard = [[InlineKeyboardButton('Оплатить', callback_data='payment')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     if query.data == 'Доставка':
         raw_entry = get_entry_from_flow(store_access_token,
@@ -409,33 +417,55 @@ def handle_delivery(update: Update, context: CallbackContext):
                                         customer_address_id)
         coords = (raw_entry['data']['latitude'],
                   raw_entry['data']['longitude'])
-        message = _database.get(f'{chat_id}_menu').decode('utf-8')
+        message = _database.json().get(f'{chat_id}_menu')['menu']
         bot.send_message(deliveryman_id, text=message,
                          parse_mode=ParseMode.HTML)
         bot.send_location(deliveryman_id, latitude=coords[0],
                           longitude=coords[1], protect_content=True)
-        context.job_queue.run_once(remind_about_order, 3600, context=chat_id)
+        message = 'Оплатите пиццу и ожидайте доставщика пиццы'
+        bot.send_message(chat_id, text=message, reply_markup=reply_markup)
+
     elif query.data == 'Самовывоз':
-        bot.send_message(
-            chat_id, text=f'Будем ждать вас по адресу: {pizzeria_address}')
         bot.send_location(chat_id, latitude=pizzeria_coords[0],
                           longitude=pizzeria_coords[1])
-
-    products_per_page = context.bot_data['products_per_page']
-    raw_products = get_products(store_access_token)
-    products = parse_products(raw_products)
-    pages_number = ceil(len(products) / products_per_page)
-    keyboard = get_menu_buttons(products, products_per_page, pages_number)
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    text = 'Можете побаловать себя ещё одной вкусной пиццей.'
-    bot.send_message(text=text, chat_id=chat_id, reply_markup=reply_markup)
-    return 'HANDLE_MENU'
+        message = f'После оплаты будем ждать вас по адресу: {pizzeria_address}'
+        bot.send_message(chat_id, text=message, reply_markup=reply_markup)
+    return 'HANDLE_DELIVERY'
 
 
-def handle_users_reply(update: Update, context: CallbackContext,
-                       client_secret: str, client_id: str,
-                       token_lifetime: int, products_per_page: int,
-                       geocoder_api: str) -> None:
+def pay_for_pizza(update: Update, context: CallbackContext) -> None:
+    '''Sends an invoice without shipping-payment.'''
+    query = update.callback_query
+    chat_id = query.message.chat_id
+    title = 'Payment Example'
+    description = 'Payment Example using python-telegram-bot'
+    payload = 'pizza_payment'
+    provider_token = context.bot_data['payment_token']
+    currency = 'RUB'
+    price = _database.json().get(f'{chat_id}_menu')['price']
+    prices = [LabeledPrice('Test', int(price) * 100)]
+    context.bot.send_invoice(
+        chat_id, title, description, payload, provider_token, currency, prices
+    )
+
+
+def pre_checkout_callback(update: Update, context: CallbackContext) -> None:
+    query = update.pre_checkout_query
+    if query.invoice_payload != 'pizza_payment':
+        query.answer(ok=False, error_message="Something went wrong...")
+    else:
+        query.answer(ok=True)
+
+
+def successful_payment_callback(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text('Спасибо! Оплата прошла успешно!')
+
+
+def handle_users_reply(update: Update, context: CallbackContext) -> None:
+    client_secret = context.bot_data['client_secret']
+    client_id = context.bot_data['client_id']
+    token_lifetime = context.bot_data['token_lifetime']
+    client_id = context.bot_data['client_id']
     try:
         store_access_token = _database.get('store_access_token')
         if not store_access_token:
@@ -444,8 +474,6 @@ def handle_users_reply(update: Update, context: CallbackContext,
                             store_access_token)
         else:
             store_access_token = store_access_token.decode('utf-8')
-        context.bot_data['geocoder_api'] = geocoder_api
-        context.bot_data['products_per_page'] = products_per_page
         context.bot_data['store_access_token'] = store_access_token
     except requests.exceptions.HTTPError as err:
         logger.warning(f'Ошибка в работе api.moltin.com\n{err}\n')
@@ -468,7 +496,6 @@ def handle_users_reply(update: Update, context: CallbackContext,
         'HANDLE_MENU': handle_menu,
         'HANDLE_DESCRIPTION': handle_description,
         'HANDLE_CART': handle_cart,
-        'WAITING_EMAIL': waiting_email,
         'HANDLE_WAITING': handle_waiting,
         'HANDLE_DELIVERY': handle_delivery,
     }
@@ -478,8 +505,8 @@ def handle_users_reply(update: Update, context: CallbackContext,
         _database.set(chat_id, next_state)
     except requests.exceptions.HTTPError as err:
         logger.warning(f'Ошибка в работе api.moltin.com\n{err}\n')
-    # except Exception as err:
-    #     logger.warning(f'Ошибка в работе телеграм бота\n{err}\n')
+    except Exception as err:
+        logger.warning(f'Ошибка в работе телеграм бота\n{err}\n')
 
 
 def main():
@@ -502,35 +529,25 @@ def main():
     _database = get_database_connection(database_password, database_host,
                                         database_port)
     tg_token = env.str('PIZZERIA_BOT_TG_TOKEN')
+    payment_token = env.str('PAYMENT_TOKEN')
     updater = Updater(tg_token)
     dispatcher = updater.dispatcher
-    dispatcher.add_handler(CallbackQueryHandler(
-        partial(handle_users_reply, client_secret=client_secret,
-                client_id=client_id, token_lifetime=token_lifetime,
-                products_per_page=products_per_page,
-                geocoder_api=geocoder_api))
-                           )
+    dispatcher.bot_data['client_id'] = client_id
+    dispatcher.bot_data['token_lifetime'] = token_lifetime
+    dispatcher.bot_data['client_secret'] = client_secret
+    dispatcher.bot_data['products_per_page'] = products_per_page
+    dispatcher.bot_data['geocoder_api'] = geocoder_api
+    dispatcher.bot_data['payment_token'] = payment_token
+    dispatcher.add_handler(CallbackQueryHandler(handle_users_reply))
     dispatcher.add_handler(MessageHandler(
-        Filters.text,
-        partial(handle_users_reply, client_secret=client_secret,
-                client_id=client_id, token_lifetime=token_lifetime,
-                products_per_page=products_per_page,
-                geocoder_api=geocoder_api))
-                           )
+        Filters.text | Filters.location,
+        handle_users_reply)
+    )
+    dispatcher.add_handler(CommandHandler('start', handle_users_reply))
     dispatcher.add_handler(MessageHandler(
-        Filters.location,
-        partial(handle_users_reply, client_secret=client_secret,
-                client_id=client_id, token_lifetime=token_lifetime,
-                products_per_page=products_per_page,
-                geocoder_api=geocoder_api))
-                           )
-    dispatcher.add_handler(CommandHandler(
-        'start',
-        partial(handle_users_reply, client_secret=client_secret,
-                client_id=client_id, token_lifetime=token_lifetime,
-                products_per_page=products_per_page,
-                geocoder_api=geocoder_api))
-                           )
+        Filters.successful_payment, successful_payment_callback)
+    )
+    dispatcher.add_handler(PreCheckoutQueryHandler(pre_checkout_callback))
     logger.info('Телеграм бот запущен')
     updater.start_polling()
     updater.idle()
