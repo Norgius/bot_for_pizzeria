@@ -176,15 +176,15 @@ def create_image_relationship(store_access_token: str, image_id: str,
     response.raise_for_status()
 
 
-def create_flow(store_access_token: str) -> str:
+def create_flow(store_access_token: str, name: str) -> str:
     url = 'https://api.moltin.com/v2/flows'
     headers = {'Authorization': f'Bearer {store_access_token}'}
     json_data = {
         'data': {
             'type': 'flow',
-            'name': 'Pizzeria',
-            'slug': 'pizzeria',
-            'description': 'pizzeria',
+            'name': name.title(),
+            'slug': name.replace(' ', '_'),
+            'description': name,
             'enabled': True,
         },
     }

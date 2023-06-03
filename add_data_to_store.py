@@ -1,6 +1,7 @@
 import json
 import argparse
 import logging
+import os
 
 from environs import Env
 import requests
@@ -30,10 +31,10 @@ def main():
     )
     parser.add_argument('--price_book', action=argparse.BooleanOptionalAction,
                         help='Аргумент для создания price_book')
-    parser.add_argument('--flow', action=argparse.BooleanOptionalAction,
+    parser.add_argument('--flow', default='', type=str,
                         help='Аргумент для создания flow')
-    parser.add_argument('--field_for_flow', default='', type=str,
-                        help='''Аргумент для создания field_for_flow
+    parser.add_argument('--fields', default='', type=str,
+                        help='''Аргумент для создания полей для моделей
                                 и путь до файла с данными о полях''')
     parser.add_argument('--menu', action=argparse.BooleanOptionalAction,
                         help='Аргумент для добавления товаров в магазин')
@@ -59,13 +60,13 @@ def main():
             create_corrency(store_access_token)
             price_book_id = create_price_book(store_access_token)
             print('price_book_id:', price_book_id)
-        elif args.flow:
-            flow_id = create_flow(store_access_token)
+        elif args.flow and args.fields:
+            flow_id = create_flow(store_access_token, args.flow)
             print('flow_id:', flow_id)
-        elif args.field_for_flow:
-            with open(args.field_for_flow, 'r') as file:
-                field_for_flow = json.load(file)
-            for field in field_for_flow:
+            folder_with_fields = 'Fields for flow'
+            with open(os.path.join(folder_with_fields, args.fields), 'r') as f:
+                fields_for_flow = json.load(f)
+            for field in fields_for_flow:
                 create_field(store_access_token, field, flow_id)
             print('Поля для Flow созданы')
         elif args.address:
