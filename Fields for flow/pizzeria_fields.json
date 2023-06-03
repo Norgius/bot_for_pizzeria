@@ -78,5 +78,25 @@
             }
         }
         }
+    },
+    {"data": {
+        "type": "field",
+        "name": "Deliveryman id",
+        "slug": "deliveryman_id",
+        "field_type": "integer",
+        "description": "Telegram ID доставщика пиццы",
+        "required": false,
+        "enabled": true,
+        "order": 5,
+        "omit_null": false,
+        "relationships": {
+            "flow": {
+                "data": {
+                    "type": "flow",
+                    "id": "flow_id"
+                }
+            }
+        }
+        }
     }
 ]
