@@ -313,8 +313,7 @@ def handle_cart(update: Update, context: CallbackContext) -> str:
         return 'HANDLE_MENU'
     else:
         message = 'Пришлите, пожалуйста, ваш адрес текстом или геолокацию'
-        bot.send_message(text=message, chat_id=query.message.chat_id,
-                         parse_mode=ParseMode.HTML)
+        bot.send_message(text=message, chat_id=query.message.chat_id)
         return 'HANDLE_WAITING'
 
 
@@ -394,34 +393,22 @@ def handle_delivery(update: Update, context: CallbackContext) -> str:
     bot = context.bot
     query = update.callback_query
     chat_id = query.message.chat_id
-    if query.data == 'payment':
-        pay_for_pizza(update, context)
-        context.job_queue.run_once(remind_about_order, 3600, context=chat_id)
-        delete_all_cart_products(store_access_token, chat_id)
-        return 'START'
-
     entry_ids = _database.get(f'{chat_id}_order').decode('utf-8')
     customer_address_id, pizzeria_id = entry_ids.split('$')
     raw_entry = get_entry_from_flow(store_access_token, 'pizzeria',
                                     pizzeria_id)
-    deliveryman_id = raw_entry['data']['deliveryman_id']
     pizzeria_coords = (raw_entry['data']['latitude'],
                        raw_entry['data']['longitude'])
+    
     pizzeria_address = raw_entry['data']['address']
-    keyboard = [[InlineKeyboardButton('Оплатить', callback_data='payment')]]
+    keyboard = [[InlineKeyboardButton('Наличными', callback_data='cash')],
+                [InlineKeyboardButton('Картой', callback_data='card')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if query.data == 'Доставка':
-        raw_entry = get_entry_from_flow(store_access_token,
-                                        'customer_address',
-                                        customer_address_id)
-        coords = (raw_entry['data']['latitude'],
-                  raw_entry['data']['longitude'])
-        message = _database.json().get(f'{chat_id}_menu')['menu']
-        bot.send_message(deliveryman_id, text=message,
-                         parse_mode=ParseMode.HTML)
-        bot.send_location(deliveryman_id, latitude=coords[0],
-                          longitude=coords[1], protect_content=True)
+        deliveryman_id = raw_entry['data']['deliveryman_id']
+        context.bot_data[f'{chat_id}_delivery'] = \
+            f'{customer_address_id}${deliveryman_id}'
         message = 'Оплатите пиццу и ожидайте доставщика пиццы'
         bot.send_message(chat_id, text=message, reply_markup=reply_markup)
 
@@ -430,7 +417,41 @@ def handle_delivery(update: Update, context: CallbackContext) -> str:
                           longitude=pizzeria_coords[1])
         message = f'После оплаты будем ждать вас по адресу: {pizzeria_address}'
         bot.send_message(chat_id, text=message, reply_markup=reply_markup)
-    return 'HANDLE_DELIVERY'
+    return 'HANDLE_PAYMENT_CHOICE'
+
+
+def handle_payment_choice(update: Update, context: CallbackContext) -> None:
+    store_access_token = context.bot_data['store_access_token']
+    bot = context.bot
+    query = update.callback_query
+    chat_id = query.message.chat_id
+    if query.data:
+        if query.data == 'card':
+            pay_for_pizza(update, context)
+        else:
+            message = 'Благодарим за заказ!'
+            bot.send_message(text=message, chat_id=query.message.chat_id)
+        try:
+            delivery = context.bot_data[f'{chat_id}_delivery']
+            customer_address_id, deliveryman_id = delivery.split('$')
+            raw_entry = get_entry_from_flow(store_access_token,
+                                            'customer_address',
+                                            customer_address_id)
+            coords = (raw_entry['data']['latitude'],
+                      raw_entry['data']['longitude'])
+
+            message = _database.json().get(f'{chat_id}_menu')['menu']
+            bot.send_message(deliveryman_id, text=message,
+                             parse_mode=ParseMode.HTML)
+            bot.send_location(deliveryman_id, latitude=coords[0],
+                              longitude=coords[1], protect_content=True)
+            context.bot_data[f'{chat_id}_delivery'] = None
+        except KeyError:
+            pass
+        delete_all_cart_products(store_access_token, chat_id)
+        context.job_queue.run_once(remind_about_order, 3600, context=chat_id)
+        return 'START'
+    return 'HANDLE_PAYMENT_CHOICE'
 
 
 def pay_for_pizza(update: Update, context: CallbackContext) -> None:
@@ -458,7 +479,7 @@ def pre_checkout_callback(update: Update, context: CallbackContext) -> None:
 
 
 def successful_payment_callback(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text('Спасибо! Оплата прошла успешно!')
+    update.message.reply_text('Благодарим за заказ! Оплата прошла успешно!')
 
 
 def handle_users_reply(update: Update, context: CallbackContext) -> None:
@@ -498,6 +519,7 @@ def handle_users_reply(update: Update, context: CallbackContext) -> None:
         'HANDLE_CART': handle_cart,
         'HANDLE_WAITING': handle_waiting,
         'HANDLE_DELIVERY': handle_delivery,
+        'HANDLE_PAYMENT_CHOICE': handle_payment_choice
     }
     state_handler = states_functions[user_state]
     try:
@@ -505,8 +527,8 @@ def handle_users_reply(update: Update, context: CallbackContext) -> None:
         _database.set(chat_id, next_state)
     except requests.exceptions.HTTPError as err:
         logger.warning(f'Ошибка в работе api.moltin.com\n{err}\n')
-    except Exception as err:
-        logger.warning(f'Ошибка в работе телеграм бота\n{err}\n')
+    # except Exception as err:
+    #     logger.warning(f'Ошибка в работе телеграм бота\n{err}\n')
 
 
 def main():
