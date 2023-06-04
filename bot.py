@@ -527,8 +527,8 @@ def handle_users_reply(update: Update, context: CallbackContext) -> None:
         _database.set(chat_id, next_state)
     except requests.exceptions.HTTPError as err:
         logger.warning(f'Ошибка в работе api.moltin.com\n{err}\n')
-    # except Exception as err:
-    #     logger.warning(f'Ошибка в работе телеграм бота\n{err}\n')
+    except Exception as err:
+        logger.warning(f'Ошибка в работе телеграм бота\n{err}\n')
 
 
 def main():
