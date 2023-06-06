@@ -54,14 +54,6 @@ def parse_products(raw_products: list) -> dict:
     return products
 
 
-def is_number(possible_number):
-    try:
-        int(possible_number)
-        return True
-    except ValueError:
-        return False
-
-
 def get_menu_buttons(products: dict, products_per_page: int,
                      pages_number: int, page: int = 0) -> list:
     keyboard = []
@@ -77,8 +69,9 @@ def get_menu_buttons(products: dict, products_per_page: int,
             keyboard.append(button)
         product_number += 1
     if pages_number > 1:
-        keyboard.append([InlineKeyboardButton('<', callback_data=page - 1),
-                         InlineKeyboardButton('>', callback_data=page + 1)]
+
+        keyboard.append([InlineKeyboardButton('<', callback_data='back'),
+                         InlineKeyboardButton('>', callback_data='forward')]
                         )
     keyboard.append([InlineKeyboardButton('Корзина', callback_data='Корзина')])
     return keyboard
@@ -167,6 +160,7 @@ def start(update: Update, context: CallbackContext) -> str:
     raw_products = get_products(store_access_token)
     products = parse_products(raw_products)
     pages_number = ceil(len(products) / products_per_page)
+    context.bot_data['page_number'] = 0
     keyboard = get_menu_buttons(products, products_per_page, pages_number)
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text(text='Пожалуйста, выберите товар!',
@@ -182,18 +176,21 @@ def handle_menu(update: Update, context: CallbackContext) -> str:
     chat_id = query.message.chat_id
     user_reply = query.data
     store_access_token = context.bot_data['store_access_token']
-    if is_number(user_reply):
-        user_reply = int(user_reply)
+    if user_reply == 'forward' or user_reply == 'back':
+        page_number = context.bot_data['page_number']
+        page_number = page_number + 1 if user_reply == 'forward' \
+            else page_number - 1
         products_per_page = context.bot_data['products_per_page']
         raw_products = get_products(store_access_token)
         products = parse_products(raw_products)
 
         pages_number = ceil(len(products) / products_per_page)
-        user_reply = 0 if user_reply >= pages_number else user_reply
-        user_reply = pages_number - 1 if user_reply < 0 else user_reply
+        page_number = 0 if page_number >= pages_number else page_number
+        page_number = pages_number - 1 if page_number < 0 else page_number
+        context.bot_data['page_number'] = page_number
 
         keyboard = get_menu_buttons(products, products_per_page,
-                                    pages_number, user_reply)
+                                    pages_number, page_number)
         reply_markup = InlineKeyboardMarkup(keyboard)
         bot.send_message(text='Пожалуйста, выберите товар!', chat_id=chat_id,
                          reply_markup=reply_markup)
@@ -269,6 +266,7 @@ def handle_description(update: Update, context: CallbackContext) -> str:
         products = parse_products(raw_products)
         products_per_page = context.bot_data['products_per_page']
         pages_number = ceil(len(products) / products_per_page)
+        context.bot_data['page_number'] = 0
         keyboard = get_menu_buttons(products, products_per_page, pages_number)
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -303,6 +301,7 @@ def handle_cart(update: Update, context: CallbackContext) -> str:
         products = parse_products(raw_products)
         products_per_page = context.bot_data['products_per_page']
         pages_number = ceil(len(products) / products_per_page)
+        context.bot_data['page_number'] = 0
         keyboard = get_menu_buttons(products, products_per_page, pages_number)
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -413,6 +412,7 @@ def handle_delivery(update: Update, context: CallbackContext) -> str:
         bot.send_message(chat_id, text=message, reply_markup=reply_markup)
 
     elif query.data == 'Самовывоз':
+        context.bot_data[f'{chat_id}_delivery'] = False
         bot.send_location(chat_id, latitude=pizzeria_coords[0],
                           longitude=pizzeria_coords[1])
         message = f'После оплаты будем ждать вас по адресу: {pizzeria_address}'
@@ -431,8 +431,9 @@ def handle_payment_choice(update: Update, context: CallbackContext) -> None:
         else:
             message = 'Благодарим за заказ!'
             bot.send_message(text=message, chat_id=query.message.chat_id)
-        try:
-            delivery = context.bot_data[f'{chat_id}_delivery']
+
+        delivery = context.bot_data[f'{chat_id}_delivery']
+        if delivery:
             customer_address_id, deliveryman_id = delivery.split('$')
             raw_entry = get_entry_from_flow(store_access_token,
                                             'customer_address',
@@ -446,8 +447,7 @@ def handle_payment_choice(update: Update, context: CallbackContext) -> None:
             bot.send_location(deliveryman_id, latitude=coords[0],
                               longitude=coords[1], protect_content=True)
             context.bot_data[f'{chat_id}_delivery'] = None
-        except KeyError:
-            pass
+
         delete_all_cart_products(store_access_token, chat_id)
         context.job_queue.run_once(remind_about_order, 3600, context=chat_id)
         return 'START'
