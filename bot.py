@@ -87,7 +87,9 @@ def get_product_quantity_in_cart(product_id, user_cart) -> int:
 
 
 def prepare_cart_buttons_and_message(
-        user_cart: dict, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
+        user_cart: dict,
+        chat_id: int,
+        _database: redis.Redis) -> tuple[str, InlineKeyboardMarkup]:
     products = user_cart.get('data')
     message = ''
     keyboard = []
@@ -169,6 +171,7 @@ def start(update: Update, context: CallbackContext) -> str:
 
 
 def handle_menu(update: Update, context: CallbackContext) -> str:
+    _database = context.bot_data['_database']
     bot = context.bot
     query = update.callback_query
     if not query:
@@ -200,7 +203,8 @@ def handle_menu(update: Update, context: CallbackContext) -> str:
     user_cart = get_user_cart(store_access_token, chat_id)
     if user_reply == 'Корзина':
         message, reply_markup = prepare_cart_buttons_and_message(user_cart,
-                                                                 chat_id)
+                                                                 chat_id,
+                                                                 _database)
         bot.send_message(chat_id=chat_id, text=message,
                          reply_markup=reply_markup, parse_mode=ParseMode.HTML)
         bot.delete_message(chat_id=chat_id,
@@ -226,6 +230,7 @@ def handle_menu(update: Update, context: CallbackContext) -> str:
 
 
 def handle_description(update: Update, context: CallbackContext) -> str:
+    _database = context.bot_data['_database']
     bot = context.bot
     query = update.callback_query
     if not query:
@@ -255,7 +260,8 @@ def handle_description(update: Update, context: CallbackContext) -> str:
     elif user_reply == 'Корзина':
         user_cart = get_user_cart(store_access_token, chat_id)
         message, reply_markup = prepare_cart_buttons_and_message(user_cart,
-                                                                 chat_id)
+                                                                 chat_id,
+                                                                 _database)
         bot.send_message(chat_id=chat_id, text=message,
                          reply_markup=reply_markup, parse_mode=ParseMode.HTML)
         bot.delete_message(chat_id=chat_id,
@@ -278,6 +284,7 @@ def handle_description(update: Update, context: CallbackContext) -> str:
 
 
 def handle_cart(update: Update, context: CallbackContext) -> str:
+    _database = context.bot_data['_database']
     bot = context.bot
     query = update.callback_query
     if not query:
@@ -290,7 +297,8 @@ def handle_cart(update: Update, context: CallbackContext) -> str:
         delete_cart_product(store_access_token, chat_id, product_id)
         user_cart = get_user_cart(store_access_token, chat_id)
         message, reply_markup = prepare_cart_buttons_and_message(user_cart,
-                                                                 chat_id)
+                                                                 chat_id,
+                                                                 _database)
         bot.send_message(chat_id=chat_id, text=message,
                          reply_markup=reply_markup, parse_mode=ParseMode.HTML)
         bot.delete_message(chat_id=chat_id,
@@ -318,6 +326,7 @@ def handle_cart(update: Update, context: CallbackContext) -> str:
 
 def handle_waiting(update: Update, context: CallbackContext) -> str:
     store_access_token = context.bot_data['store_access_token']
+    _database = context.bot_data['_database']
     chat_id = update.effective_chat.id
     try:
         current_pos = (update.message.location.latitude,
@@ -389,6 +398,7 @@ def remind_about_order(context: CallbackContext) -> str:
 
 def handle_delivery(update: Update, context: CallbackContext) -> str:
     store_access_token = context.bot_data['store_access_token']
+    _database = context.bot_data['_database']
     bot = context.bot
     query = update.callback_query
     chat_id = query.message.chat_id
@@ -422,6 +432,7 @@ def handle_delivery(update: Update, context: CallbackContext) -> str:
 
 def handle_payment_choice(update: Update, context: CallbackContext) -> None:
     store_access_token = context.bot_data['store_access_token']
+    _database = context.bot_data['_database']
     bot = context.bot
     query = update.callback_query
     chat_id = query.message.chat_id
@@ -456,6 +467,7 @@ def handle_payment_choice(update: Update, context: CallbackContext) -> None:
 
 def pay_for_pizza(update: Update, context: CallbackContext) -> None:
     '''Sends an invoice without shipping-payment.'''
+    _database = context.bot_data['_database']
     query = update.callback_query
     chat_id = query.message.chat_id
     title = 'Payment Example'
@@ -487,6 +499,7 @@ def handle_users_reply(update: Update, context: CallbackContext) -> None:
     client_id = context.bot_data['client_id']
     token_lifetime = context.bot_data['token_lifetime']
     client_id = context.bot_data['client_id']
+    _database = context.bot_data['_database']
     try:
         store_access_token = _database.get('store_access_token')
         if not store_access_token:
@@ -547,13 +560,13 @@ def main():
         level=logging.INFO
     )
     logger.setLevel(logging.INFO)
-    global _database
     _database = redis.Redis(host=database_host, port=database_port,
                             password=database_password)
     tg_token = env.str('PIZZERIA_BOT_TG_TOKEN')
     payment_token = env.str('PAYMENT_TOKEN')
     updater = Updater(tg_token)
     dispatcher = updater.dispatcher
+    dispatcher.bot_data['_database'] = _database
     dispatcher.bot_data['client_id'] = client_id
     dispatcher.bot_data['token_lifetime'] = token_lifetime
     dispatcher.bot_data['client_secret'] = client_secret
