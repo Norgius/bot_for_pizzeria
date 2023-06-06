@@ -3,10 +3,10 @@ import argparse
 import logging
 import os
 
-from environs import Env
+import redis
 import requests
+from environs import Env
 
-from database import get_database_connection
 from moltin_api import (get_access_token, set_price_for_product,
                         create_corrency, create_price_book, create_product,
                         upload_image, create_image_relationship, create_flow,
@@ -46,8 +46,8 @@ def main():
         level=logging.INFO
     )
     logger.setLevel(logging.INFO)
-    _database = get_database_connection(database_password, database_host,
-                                        database_port)
+    _database = redis.Redis(host=database_host, port=database_port,
+                            password=database_password)
     store_access_token = _database.get('store_access_token')
     if not store_access_token:
         store_access_token = get_access_token(client_secret, client_id)

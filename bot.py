@@ -2,6 +2,7 @@ import logging
 from math import ceil
 from textwrap import dedent
 
+import redis
 import requests
 from geopy import distance
 from environs import Env
@@ -11,7 +12,6 @@ from telegram.ext import (Filters, Updater, CallbackContext, CommandHandler,
                           CallbackQueryHandler, MessageHandler,
                           PreCheckoutQueryHandler)
 
-from database import get_database_connection
 from moltin_api import (get_access_token, get_products, get_product_image,
                         put_product_in_cart, get_user_cart,
                         delete_cart_product, get_entry_from_flow,
@@ -548,8 +548,8 @@ def main():
     )
     logger.setLevel(logging.INFO)
     global _database
-    _database = get_database_connection(database_password, database_host,
-                                        database_port)
+    _database = redis.Redis(host=database_host, port=database_port,
+                            password=database_password)
     tg_token = env.str('PIZZERIA_BOT_TG_TOKEN')
     payment_token = env.str('PAYMENT_TOKEN')
     updater = Updater(tg_token)
